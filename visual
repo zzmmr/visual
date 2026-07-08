@@ -12,6 +12,7 @@ local Visual = {
     GetTeam = function(player) return "Neutral" end,
 }
 
+-- Services
 local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
@@ -19,6 +20,7 @@ local Players = game:GetService("Players")
 local CurrentCamera = Workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
 
+-- Unique seed generator
 local seedCounter = 0
 local function generateSeed()
     seedCounter = seedCounter + 1
@@ -79,19 +81,12 @@ Visual.Create = function(object, isHumanoid, color, name, className)
     if not object then return end 
     name = name or object.Name 
     
-    if isHumanoid and not color and typeof(Visual.GetTeam) == "function" then 
-        local pl = Players:GetPlayerFromCharacter(object)
-        if pl then
-            color = Visual.Settings.TeamColors[Visual.GetTeam(pl)]
-        end
-    end 
-    
     local seed = generateSeed()
     
     local entry = {
         Object = object,
         IsHumanoid = isHumanoid,
-        OverriddenColor = color,
+        OverriddenColor = color, -- Manual color override passed through parameter
         Name = name,
         ClassName = className, 
         Drawing = {},
@@ -118,6 +113,7 @@ Visual.Update = function(seed, color, name)
     end
 end
 
+-- Master Loop
 RunService.RenderStepped:Connect(function()
     local viewportSize = CurrentCamera.ViewportSize
     local screenBottomCenter = Vector2.new(viewportSize.X / 2, viewportSize.Y)
@@ -130,6 +126,17 @@ RunService.RenderStepped:Connect(function()
             continue
         end
         
+        -- Resolve live color requirements (Dynamic Team Checks)
+        local dynamicColor = entry.OverriddenColor
+        if entry.IsHumanoid and not entry.OverriddenColor and typeof(Visual.GetTeam) == "function" then
+            local pl = Players:GetPlayerFromCharacter(obj)
+            if pl then
+                local teamName = Visual.GetTeam(pl)
+                dynamicColor = Visual.Settings.TeamColors[teamName]
+            end
+        end
+        
+        -- Priority Order: Global Class Registry -> Dynamic/Override Color -> Global Settings
         local function resolveSetting(category, key)
             if entry.ClassName and Visual.Classes[entry.ClassName] then
                 local classConfig = Visual.Classes[entry.ClassName][category]
@@ -137,8 +144,8 @@ RunService.RenderStepped:Connect(function()
                     return classConfig[key]
                 end
             end
-            if category ~= "Health" and key == "Color" and entry.OverriddenColor then
-                return entry.OverriddenColor
+            if category ~= "Health" and key == "Color" and dynamicColor then
+                return dynamicColor
             end
             if Visual.Settings[category] and Visual.Settings[category][key] ~= nil then
                 return Visual.Settings[category][key]
@@ -168,6 +175,7 @@ RunService.RenderStepped:Connect(function()
             continue
         end
         
+        -- Initialize drawing objects dynamically
         if not entry.Drawing.Box then
             entry.Drawing.Box = Drawing.new("Square")
             entry.Drawing.Box.Thickness = 1
@@ -192,6 +200,9 @@ RunService.RenderStepped:Connect(function()
         
         local boxPos, boxSize = getBoundingBox2D(obj, entry.IsHumanoid)
         
+        -------------------------------------------
+        -- 1. BOX RENDER LAYER
+        -------------------------------------------
         local boxEnabled = resolveSetting("Box", "Enabled")
         if boxEnabled and boxPos and boxSize then
             local boxColor = resolveSetting("Box", "Color")
@@ -203,6 +214,9 @@ RunService.RenderStepped:Connect(function()
             entry.Drawing.Box.Visible = false
         end
         
+        -------------------------------------------
+        -- 2. HIGHLIGHT RENDER LAYER
+        -------------------------------------------
         local highlightEnabled = resolveSetting("Highlight", "Enabled")
         if highlightEnabled then
             local hlColor = resolveSetting("Highlight", "Color")
@@ -214,7 +228,7 @@ RunService.RenderStepped:Connect(function()
             entry.HighlightInstance.FillColor = hlColor
             entry.HighlightInstance.OutlineColor = hlColor
             entry.HighlightInstance.OutlineTransparency = 1 
-            entry.HighlightInstance.FillTransparency = 0.3
+            entry.HighlightInstance.FillTransparency = 0.5
             entry.HighlightInstance.Enabled = true
         else
             if entry.HighlightInstance then
@@ -222,6 +236,9 @@ RunService.RenderStepped:Connect(function()
             end
         end
         
+        -------------------------------------------
+        -- 3. HEALTH BAR RENDER LAYER
+        -------------------------------------------
         local healthEnabled = resolveSetting("Health", "Enabled")
         if healthEnabled and entry.IsHumanoid and boxPos and boxSize then
             local humanoid = obj:FindFirstChildOfClass("Humanoid")
@@ -254,6 +271,9 @@ RunService.RenderStepped:Connect(function()
             entry.Drawing.HealthBar.Visible = false
         end
         
+        -------------------------------------------
+        -- 4. TRACERS RENDER LAYER
+        -------------------------------------------
         local tracersEnabled = resolveSetting("Tracers", "Enabled")
         if tracersEnabled then
             local tracerColor = resolveSetting("Tracers", "Color")
@@ -267,6 +287,9 @@ RunService.RenderStepped:Connect(function()
             entry.Drawing.Tracer.Visible = false
         end
         
+        -------------------------------------------
+        -- 5. TEXT NAMES RENDER LAYER
+        -------------------------------------------
         local namesEnabled = resolveSetting("Names", "Enabled")
         if namesEnabled and boxPos and boxSize then
             local nameColor = resolveSetting("Names", "Color")
