@@ -257,7 +257,7 @@ RunService.RenderStepped:Connect(function()
             if entry.HighlightInstance then entry.HighlightInstance.Enabled = false end
             continue
         end
-        
+        entry.Drawing = entry.Drawing or {} -- 🌟 ADD THIS LINE TO FIX THE ERROR
         -- Dynamically allocate vector graphics arrays
         if not entry.Drawing.Box then
             entry.Drawing.Box = Drawing.new("Square")
