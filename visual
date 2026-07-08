@@ -302,18 +302,28 @@ RunService.RenderStepped:Connect(function()
         local highlightEnabled = resolveSetting("Highlight", "Enabled")
         if highlightEnabled then
             local hlColor = resolveSetting("Highlight", "Color")
-            if not entry.HighlightInstance then
+            
+            -- 🌟 FIX: Re-create the highlight if it was destroyed during a respawn
+            if not entry.HighlightInstance or not entry.HighlightInstance.Parent then
+                if entry.HighlightInstance then entry.HighlightInstance:Destroy() end
                 entry.HighlightInstance = Instance.new("Highlight")
                 entry.HighlightInstance.Parent = LocalPlayer:WaitForChild("PlayerGui")
             end
-            entry.HighlightInstance.Adornee = obj
+            
+            -- Keep the target model updated dynamically
+            if entry.HighlightInstance.Adornee ~= obj then
+                entry.HighlightInstance.Adornee = obj
+            end
+            
             entry.HighlightInstance.FillColor = hlColor
             entry.HighlightInstance.OutlineColor = hlColor
             entry.HighlightInstance.OutlineTransparency = 1 
             entry.HighlightInstance.FillTransparency = 0.5
             entry.HighlightInstance.Enabled = true
         else
-            if entry.HighlightInstance then entry.HighlightInstance.Enabled = false end
+            if entry.HighlightInstance then 
+                entry.HighlightInstance.Enabled = false 
+            end
         end
         
         -------------------------------------------
