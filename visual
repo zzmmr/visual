@@ -1,0 +1,283 @@
+local Visual = {
+    Settings = {
+        Names = { Enabled = false, Color = Color3.fromRGB(255, 0, 0) }, 
+        Tracers = { Enabled = false, Color = Color3.fromRGB(255, 0, 0) }, 
+        Health = { Enabled = false },
+        Highlight = { Enabled = false, Color = Color3.fromRGB(255, 0, 0) },
+        Box = { Enabled = false, Color = Color3.fromRGB(255, 0, 0) },
+        TeamColors = {}
+    },
+    Classes = {}, 
+    Objects = {},
+    GetTeam = function(player) return "Neutral" end,
+}
+
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+
+local CurrentCamera = Workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
+
+local seedCounter = 0
+local function generateSeed()
+    seedCounter = seedCounter + 1
+    return "VisualObj_" .. tostring(seedCounter)
+end
+
+local function clearVisualElements(entry)
+    if entry.Drawing then
+        for _, drawingObj in pairs(entry.Drawing) do
+            drawingObj.Visible = false
+            drawingObj:Remove()
+        end
+        entry.Drawing = nil
+    end
+    if entry.HighlightInstance then
+        entry.HighlightInstance:Destroy()
+        entry.HighlightInstance = nil
+    end
+end
+
+local function getBoundingBox2D(object, isHumanoid)
+    if not object then return nil end
+    
+    local position, size
+    if isHumanoid then
+        local hrp = object:FindFirstChild("HumanoidRootPart")
+        if not hrp then return nil end
+        position = hrp.Position
+        size = Vector3.new(4, 5.5, 3) 
+    elseif object:IsA("Model") then
+        local modelCFrame, modelSize = object:GetBoundingBox()
+        position = modelCFrame.Position
+        size = modelSize
+    elseif object:IsA("BasePart") then
+        position = object.Position
+        size = object.Size
+    else
+        return nil
+    end
+    
+    local camTL, onScreenTL = CurrentCamera:WorldToViewportPoint(position + Vector3.new(-size.X/2, size.Y/2, 0))
+    local camBR, onScreenBR = CurrentCamera:WorldToViewportPoint(position + Vector3.new(size.X/2, -size.Y/2, 0))
+    
+    if not onScreenTL or not onScreenBR then return nil end
+    
+    local width = math.abs(camTL.X - camBR.X)
+    local height = math.abs(camTL.Y - camBR.Y)
+    
+    return Vector2.new(math.min(camTL.X, camBR.X), math.min(camTL.Y, camBR.Y)), Vector2.new(width, height)
+end
+
+Visual.RegisterClass = function(className, settingsTable)
+    Visual.Classes[className] = settingsTable or {}
+    return Visual.Classes[className]
+end
+
+Visual.Create = function(object, isHumanoid, color, name, className)
+    if not object then return end 
+    name = name or object.Name 
+    
+    if isHumanoid and not color and typeof(Visual.GetTeam) == "function" then 
+        local pl = Players:GetPlayerFromCharacter(object)
+        if pl then
+            color = Visual.Settings.TeamColors[Visual.GetTeam(pl)]
+        end
+    end 
+    
+    local seed = generateSeed()
+    
+    local entry = {
+        Object = object,
+        IsHumanoid = isHumanoid,
+        OverriddenColor = color,
+        Name = name,
+        ClassName = className, 
+        Drawing = {},
+        HighlightInstance = nil
+    }
+    
+    Visual.Objects[seed] = entry
+    return seed
+end
+
+Visual.Remove = function(seed)
+    local entry = Visual.Objects[seed]
+    if entry then
+        clearVisualElements(entry)
+        Visual.Objects[seed] = nil
+    end
+end
+
+Visual.Update = function(seed, color, name)
+    local entry = Visual.Objects[seed]
+    if entry then
+        if color then entry.OverriddenColor = color end
+        if name then entry.Name = name end
+    end
+end
+
+RunService.RenderStepped:Connect(function()
+    local viewportSize = CurrentCamera.ViewportSize
+    local screenBottomCenter = Vector2.new(viewportSize.X / 2, viewportSize.Y)
+
+    for seed, entry in pairs(Visual.Objects) do
+        local obj = entry.Object
+        
+        if not obj or not obj.Parent then
+            Visual.Remove(seed)
+            continue
+        end
+        
+        local function resolveSetting(category, key)
+            if entry.ClassName and Visual.Classes[entry.ClassName] then
+                local classConfig = Visual.Classes[entry.ClassName][category]
+                if classConfig and classConfig[key] ~= nil then
+                    return classConfig[key]
+                end
+            end
+            if category ~= "Health" and key == "Color" and entry.OverriddenColor then
+                return entry.OverriddenColor
+            end
+            if Visual.Settings[category] and Visual.Settings[category][key] ~= nil then
+                return Visual.Settings[category][key]
+            end
+            return nil
+        end
+        
+        local worldPos
+        if obj:IsA("Model") then
+            worldPos = obj.PrimaryPart and obj.PrimaryPart.Position or obj:GetBoundingBox().Position
+        elseif obj:IsA("BasePart") then
+            worldPos = obj.Position
+        else
+            Visual.Remove(seed)
+            continue
+        end
+        
+        local screenPos, onScreen = CurrentCamera:WorldToViewportPoint(worldPos)
+        
+        if not onScreen then
+            if entry.Drawing then
+                for _, d in pairs(entry.Drawing) do d.Visible = false end
+            end
+            if entry.HighlightInstance then
+                entry.HighlightInstance.Enabled = false
+            end
+            continue
+        end
+        
+        if not entry.Drawing.Box then
+            entry.Drawing.Box = Drawing.new("Square")
+            entry.Drawing.Box.Thickness = 1
+            entry.Drawing.Box.Filled = false
+            
+            entry.Drawing.Tracer = Drawing.new("Line")
+            entry.Drawing.Tracer.Thickness = 1
+            
+            entry.Drawing.HealthBarBG = Drawing.new("Square")
+            entry.Drawing.HealthBarBG.Filled = true
+            entry.Drawing.HealthBarBG.Thickness = 0
+            
+            entry.Drawing.HealthBar = Drawing.new("Square")
+            entry.Drawing.HealthBar.Filled = true
+            entry.Drawing.HealthBar.Thickness = 0
+            
+            entry.Drawing.Name = Drawing.new("Text")
+            entry.Drawing.Name.Size = 14
+            entry.Drawing.Name.Center = true
+            entry.Drawing.Name.Outline = true
+        end
+        
+        local boxPos, boxSize = getBoundingBox2D(obj, entry.IsHumanoid)
+        
+        local boxEnabled = resolveSetting("Box", "Enabled")
+        if boxEnabled and boxPos and boxSize then
+            local boxColor = resolveSetting("Box", "Color")
+            entry.Drawing.Box.Position = boxPos
+            entry.Drawing.Box.Size = boxSize
+            entry.Drawing.Box.Color = boxColor
+            entry.Drawing.Box.Visible = true
+        else
+            entry.Drawing.Box.Visible = false
+        end
+        
+        local highlightEnabled = resolveSetting("Highlight", "Enabled")
+        if highlightEnabled then
+            local hlColor = resolveSetting("Highlight", "Color")
+            if not entry.HighlightInstance then
+                entry.HighlightInstance = Instance.new("Highlight")
+                entry.HighlightInstance.Parent = LocalPlayer:WaitForChild("PlayerGui")
+            end
+            entry.HighlightInstance.Adornee = obj
+            entry.HighlightInstance.FillColor = hlColor
+            entry.HighlightInstance.OutlineColor = hlColor
+            entry.HighlightInstance.OutlineTransparency = 1 
+            entry.HighlightInstance.FillTransparency = 0.3
+            entry.HighlightInstance.Enabled = true
+        else
+            if entry.HighlightInstance then
+                entry.HighlightInstance.Enabled = false
+            end
+        end
+        
+        local healthEnabled = resolveSetting("Health", "Enabled")
+        if healthEnabled and entry.IsHumanoid and boxPos and boxSize then
+            local humanoid = obj:FindFirstChildOfClass("Humanoid")
+            if humanoid then
+                local healthPct = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
+                
+                local barWidth = 2
+                local padding = 4
+                local bgPos = Vector2.new(boxPos.X - barWidth - padding, boxPos.Y)
+                local bgSize = Vector2.new(barWidth, boxSize.Y)
+                
+                entry.Drawing.HealthBarBG.Position = bgPos
+                entry.Drawing.HealthBarBG.Size = bgSize
+                entry.Drawing.HealthBarBG.Color = Color3.fromRGB(40, 40, 40)
+                entry.Drawing.HealthBarBG.Visible = true
+                
+                local barHeight = boxSize.Y * healthPct
+                local currentBarPos = Vector2.new(bgPos.X, bgPos.Y + (boxSize.Y - barHeight))
+                
+                entry.Drawing.HealthBar.Position = currentBarPos
+                entry.Drawing.HealthBar.Size = Vector2.new(barWidth, barHeight)
+                entry.Drawing.HealthBar.Color = Color3.fromRGB(255, 0, 0):Lerp(Color3.fromRGB(0, 255, 0), healthPct)
+                entry.Drawing.HealthBar.Visible = true
+            else
+                entry.Drawing.HealthBarBG.Visible = false
+                entry.Drawing.HealthBar.Visible = false
+            end
+        else
+            entry.Drawing.HealthBarBG.Visible = false
+            entry.Drawing.HealthBar.Visible = false
+        end
+        
+        local tracersEnabled = resolveSetting("Tracers", "Enabled")
+        if tracersEnabled then
+            local tracerColor = resolveSetting("Tracers", "Color")
+            local targetPos = boxPos and Vector2.new(boxPos.X + (boxSize.X / 2), boxPos.Y + boxSize.Y) or Vector2.new(screenPos.X, screenPos.Y)
+            
+            entry.Drawing.Tracer.From = screenBottomCenter
+            entry.Drawing.Tracer.To = targetPos
+            entry.Drawing.Tracer.Color = tracerColor
+            entry.Drawing.Tracer.Visible = true
+        else
+            entry.Drawing.Tracer.Visible = false
+        end
+        
+        local namesEnabled = resolveSetting("Names", "Enabled")
+        if namesEnabled and boxPos and boxSize then
+            local nameColor = resolveSetting("Names", "Color")
+            entry.Drawing.Name.Text = entry.Name
+            entry.Drawing.Name.Color = nameColor
+            entry.Drawing.Name.Position = Vector2.new(boxPos.X + (boxSize.X / 2), boxPos.Y - 16)
+            entry.Drawing.Name.Visible = true
+        else
+            entry.Drawing.Name.Visible = false
+        end
+    end
+end)
+
+return Visual
