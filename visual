@@ -1,5 +1,6 @@
 local Visual = {
     Settings = {
+        MasterEnabled = true,
         Names = { Enabled = false, Color = Color3.fromRGB(255, 0, 0) }, 
         Tracers = { Enabled = false, Color = Color3.fromRGB(255, 0, 0) }, 
         Health = { Enabled = false },
@@ -10,7 +11,7 @@ local Visual = {
     Classes = {}, 
     Objects = {},
     GetTeam = function(player) return "Neutral" end,
-    GetTeamClass = function(player) return nil end, -- Returns a dynamic class name based on the player's team
+    GetTeamClass = function(player) return nil end,
 }
 
 -- Services
@@ -28,6 +29,7 @@ local function generateSeed()
     return "VisualObj_" .. tostring(seedCounter)
 end
 
+-- Cleanly removes drawing structures and highlights from a specific entry
 local function clearVisualElements(entry)
     if entry.Drawing then
         for _, drawingObj in pairs(entry.Drawing) do
@@ -75,24 +77,62 @@ end
 
 Visual.RegisterClass = function(className, settingsTable)
     Visual.Classes[className] = settingsTable or {}
+    if Visual.Classes[className].Enabled == nil then
+        Visual.Classes[className].Enabled = true
+    end
     return Visual.Classes[className]
 end
 
-Visual.Create = function(object, isHumanoid, color, name, className)
-    if not object then return end 
-    name = name or object.Name 
+--[[
+    Visual.Create
+    - objectOrPlayer: Accepts a Model, BasePart, OR a Player Instance!
+    - isHumanoid: Boolean determining if health calculations apply
+    - color: (Optional) Override static color
+    - name: (Optional) Explicit naming text override
+    - className: (Optional) Target registered class name string
+]]
+Visual.Create = function(objectOrPlayer, isHumanoid, color, name, className)
+    if not objectOrPlayer then return end 
     
     local seed = generateSeed()
-    
     local entry = {
-        Object = object,
         IsHumanoid = isHumanoid,
-        OverriddenColor = color, 
-        Name = name,
+        OverriddenColor = color,
         ClassName = className, 
         Drawing = {},
-        HighlightInstance = nil
+        HighlightInstance = nil,
+        Connections = {} -- Stores respawn connection hooks for player instances
     }
+    
+    -- If a Player object is passed instead of a physical instance
+    if objectOrPlayer:IsA("Player") then
+        entry.Player = objectOrPlayer
+        entry.Name = name or objectOrPlayer.Name
+        entry.Object = objectOrPlayer.Character
+        
+        -- Event connection to listen for future player respawns automatically
+        local conn = objectOrPlayer.CharacterAdded:Connect(function(newCharacter)
+            task.wait(0.2) -- Give character limbs a moment to assemble safely
+            if Visual.Objects[seed] then
+                clearVisualElements(Visual.Objects[seed])
+                Visual.Objects[seed].Object = newCharacter
+            end
+        end)
+        table.insert(entry.Connections, conn)
+        
+        -- Event connection to cleanly clear out drawings the moment they die/despawn
+        local connRemove = objectOrPlayer.CharacterRemoving:Connect(function()
+            if Visual.Objects[seed] then
+                clearVisualElements(Visual.Objects[seed])
+                Visual.Objects[seed].Object = nil
+            end
+        end)
+        table.insert(entry.Connections, connRemove)
+    else
+        -- Standard Model/BasePart execution path
+        entry.Object = objectOrPlayer
+        entry.Name = name or objectOrPlayer.Name
+    end
     
     Visual.Objects[seed] = entry
     return seed
@@ -102,11 +142,16 @@ Visual.Remove = function(seed)
     local entry = Visual.Objects[seed]
     if entry then
         clearVisualElements(entry)
+        -- Disconnect character added/removing connection links to prevent memory leaks
+        if entry.Connections then
+            for _, conn in ipairs(entry.Connections) do
+                conn:Disconnect()
+            end
+        end
         Visual.Objects[seed] = nil
     end
 end
 
--- NEW: Completely removes all tracked objects matching a specific class
 Visual.RemoveClass = function(className)
     for seed, entry in pairs(Visual.Objects) do
         if entry.ClassName == className then
@@ -123,54 +168,73 @@ Visual.Update = function(seed, color, name)
     end
 end
 
--- Master Loop
+-- Master Render Tick
 RunService.RenderStepped:Connect(function()
     local viewportSize = CurrentCamera.ViewportSize
     local screenBottomCenter = Vector2.new(viewportSize.X / 2, viewportSize.Y)
 
     for seed, entry in pairs(Visual.Objects) do
+        -- If tracking a player, find who they belong to for dynamic operations
+        local targetPlayer = entry.Player
         local obj = entry.Object
         
-        if not obj or not obj.Parent then
+        -- Master Global System Killswitch
+        if not Visual.Settings.MasterEnabled then
+            if entry.Drawing then
+                for _, d in pairs(entry.Drawing) do d.Visible = false end
+            end
+            if entry.HighlightInstance then entry.HighlightInstance.Enabled = false end
+            continue
+        end
+        
+        -- If it's a regular part/model and it's missing, clean it out
+        if not targetPlayer and (not obj or not obj.Parent) then
             Visual.Remove(seed)
             continue
         end
         
-        -- Resolve live color & class requirements (Dynamic Team Checks)
+        -- If it's a player, check if they actually left the server completely
+        if targetPlayer and not targetPlayer.Parent then
+            Visual.Remove(seed)
+            continue
+        end
+        
+        -- If a player exists but has no active spawn character model right now, bypass rendering safely
+        if not obj or not obj.Parent then
+            continue
+        end
+        
+        -- Master Class Killswitch
+        if entry.ClassName and Visual.Classes[entry.ClassName] and Visual.Classes[entry.ClassName].Enabled == false then
+            if entry.Drawing then
+                for _, d in pairs(entry.Drawing) do d.Visible = false end
+            end
+            if entry.HighlightInstance then entry.HighlightInstance.Enabled = false end
+            continue
+        end
+
+        -- Resolve dynamic team classes and colors
         local dynamicColor = entry.OverriddenColor
-        if entry.IsHumanoid then
-            local pl = Players:GetPlayerFromCharacter(obj)
-            if pl then
-                -- 1. Update Dynamic Team Color
-                if not entry.OverriddenColor and typeof(Visual.GetTeam) == "function" then
-                    local teamName = Visual.GetTeam(pl)
-                    dynamicColor = Visual.Settings.TeamColors[teamName]
-                end
-                
-                -- 2. Update Dynamic Team Class
-                if typeof(Visual.GetTeamClass) == "function" then
-                    local teamClass = Visual.GetTeamClass(pl)
-                    if teamClass then
-                        entry.ClassName = teamClass
-                    end
-                end
+        local pl = targetPlayer or (entry.IsHumanoid and Players:GetPlayerFromCharacter(obj))
+        
+        if pl then
+            if not entry.OverriddenColor and typeof(Visual.GetTeam) == "function" then
+                dynamicColor = Visual.Settings.TeamColors[Visual.GetTeam(pl)]
+            end
+            if typeof(Visual.GetTeamClass) == "function" then
+                local teamClass = Visual.GetTeamClass(pl)
+                if teamClass then entry.ClassName = teamClass end
             end
         end
         
-        -- Priority Order: Global Class Registry -> Dynamic/Override Color -> Global Settings
+        -- Rule Resolution Engine
         local function resolveSetting(category, key)
             if entry.ClassName and Visual.Classes[entry.ClassName] then
                 local classConfig = Visual.Classes[entry.ClassName][category]
-                if classConfig and classConfig[key] ~= nil then
-                    return classConfig[key]
-                end
+                if classConfig and classConfig[key] ~= nil then return classConfig[key] end
             end
-            if category ~= "Health" and key == "Color" and dynamicColor then
-                return dynamicColor
-            end
-            if Visual.Settings[category] and Visual.Settings[category][key] ~= nil then
-                return Visual.Settings[category][key]
-            end
+            if category ~= "Health" and key == "Color" and dynamicColor then return dynamicColor end
+            if Visual.Settings[category] and Visual.Settings[category][key] ~= nil then return Visual.Settings[category][key] end
             return nil
         end
         
@@ -190,13 +254,11 @@ RunService.RenderStepped:Connect(function()
             if entry.Drawing then
                 for _, d in pairs(entry.Drawing) do d.Visible = false end
             end
-            if entry.HighlightInstance then
-                entry.HighlightInstance.Enabled = false
-            end
+            if entry.HighlightInstance then entry.HighlightInstance.Enabled = false end
             continue
         end
         
-        -- Initialize drawing objects dynamically
+        -- Dynamically allocate vector graphics arrays
         if not entry.Drawing.Box then
             entry.Drawing.Box = Drawing.new("Square")
             entry.Drawing.Box.Thickness = 1
@@ -226,10 +288,9 @@ RunService.RenderStepped:Connect(function()
         -------------------------------------------
         local boxEnabled = resolveSetting("Box", "Enabled")
         if boxEnabled and boxPos and boxSize then
-            local boxColor = resolveSetting("Box", "Color")
             entry.Drawing.Box.Position = boxPos
             entry.Drawing.Box.Size = boxSize
-            entry.Drawing.Box.Color = boxColor
+            entry.Drawing.Box.Color = resolveSetting("Box", "Color")
             entry.Drawing.Box.Visible = true
         else
             entry.Drawing.Box.Visible = false
@@ -252,9 +313,7 @@ RunService.RenderStepped:Connect(function()
             entry.HighlightInstance.FillTransparency = 0.5
             entry.HighlightInstance.Enabled = true
         else
-            if entry.HighlightInstance then
-                entry.HighlightInstance.Enabled = false
-            end
+            if entry.HighlightInstance then entry.HighlightInstance.Enabled = false end
         end
         
         -------------------------------------------
@@ -265,21 +324,16 @@ RunService.RenderStepped:Connect(function()
             local humanoid = obj:FindFirstChildOfClass("Humanoid")
             if humanoid then
                 local healthPct = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
-                
-                local barWidth = 2
-                local padding = 4
+                local barWidth, padding = 2, 4
                 local bgPos = Vector2.new(boxPos.X - barWidth - padding, boxPos.Y)
-                local bgSize = Vector2.new(barWidth, boxSize.Y)
                 
                 entry.Drawing.HealthBarBG.Position = bgPos
-                entry.Drawing.HealthBarBG.Size = bgSize
+                entry.Drawing.HealthBarBG.Size = Vector2.new(barWidth, boxSize.Y)
                 entry.Drawing.HealthBarBG.Color = Color3.fromRGB(40, 40, 40)
                 entry.Drawing.HealthBarBG.Visible = true
                 
                 local barHeight = boxSize.Y * healthPct
-                local currentBarPos = Vector2.new(bgPos.X, bgPos.Y + (boxSize.Y - barHeight))
-                
-                entry.Drawing.HealthBar.Position = currentBarPos
+                entry.Drawing.HealthBar.Position = Vector2.new(bgPos.X, bgPos.Y + (boxSize.Y - barHeight))
                 entry.Drawing.HealthBar.Size = Vector2.new(barWidth, barHeight)
                 entry.Drawing.HealthBar.Color = Color3.fromRGB(255, 0, 0):Lerp(Color3.fromRGB(0, 255, 0), healthPct)
                 entry.Drawing.HealthBar.Visible = true
@@ -297,12 +351,10 @@ RunService.RenderStepped:Connect(function()
         -------------------------------------------
         local tracersEnabled = resolveSetting("Tracers", "Enabled")
         if tracersEnabled then
-            local tracerColor = resolveSetting("Tracers", "Color")
             local targetPos = boxPos and Vector2.new(boxPos.X + (boxSize.X / 2), boxPos.Y + boxSize.Y) or Vector2.new(screenPos.X, screenPos.Y)
-            
             entry.Drawing.Tracer.From = screenBottomCenter
             entry.Drawing.Tracer.To = targetPos
-            entry.Drawing.Tracer.Color = tracerColor
+            entry.Drawing.Tracer.Color = resolveSetting("Tracers", "Color")
             entry.Drawing.Tracer.Visible = true
         else
             entry.Drawing.Tracer.Visible = false
@@ -313,9 +365,8 @@ RunService.RenderStepped:Connect(function()
         -------------------------------------------
         local namesEnabled = resolveSetting("Names", "Enabled")
         if namesEnabled and boxPos and boxSize then
-            local nameColor = resolveSetting("Names", "Color")
             entry.Drawing.Name.Text = entry.Name
-            entry.Drawing.Name.Color = nameColor
+            entry.Drawing.Name.Color = resolveSetting("Names", "Color")
             entry.Drawing.Name.Position = Vector2.new(boxPos.X + (boxSize.X / 2), boxPos.Y - 16)
             entry.Drawing.Name.Visible = true
         else
